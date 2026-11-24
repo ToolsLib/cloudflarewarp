@@ -19,10 +19,11 @@ cleanup() {
 
 request() {
   local route=$1 client_ip=$2
+  # Whoami echoes HTTP header lines with CRLF endings.
   compose exec -T traefik wget -qO- -T 3 \
     --header "CF-Connecting-IP: $client_ip" \
     --header 'CF-Visitor: {"scheme":"https"}' \
-    "http://127.0.0.1:8000/$route"
+    "http://127.0.0.1:8000/$route" | sed $'s/\r$//'
 }
 
 require_header() {
