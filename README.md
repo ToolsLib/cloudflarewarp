@@ -1,58 +1,31 @@
-# ⚠️ Project No Longer Maintained ⚠️
+# Cloudflare client IP middleware for Traefik
 
-🚨 **This repository is no longer maintained or supported.** 🚨
+This is the ToolsLib fork of BetterCorp’s archived Traefik plugin. [Upstream repository](https://github.com/BetterCorp/cloudflarewarp)
 
-*We have moved to using [Caddy](https://caddyserver.com/?utm_source=github.com/BetterCorp/cloudflarewarp) for our needs.*
+For requests from a trusted proxy, the middleware uses `CF-Connecting-IP` to set `X-Real-IP` and `X-Forwarded-For`, and uses the scheme in `CF-Visitor` to set `X-Forwarded-Proto` when present. Traefik can append the immediate peer to `X-Forwarded-For` when it sends the request to the backend. Components that read `RemoteAddr` still see the immediate peer.
 
-*Thank you for your interest and support!*
+## Install from this checkout
 
-*If you wish to fork this project, it includes built-in testing tools. You can update the Traefik and Go versions to continue development.*
+For Traefik 3.8, mount or copy this repository to `plugins-local/src/github.com/BetterCorp/cloudflarewarp` relative to Traefik's working directory. In the official Traefik container, use `/plugins-local/src/github.com/BetterCorp/cloudflarewarp`. The directory follows the Go module name declared by this checkout. The catalog serves BetterCorp's upstream releases. [Traefik catalog entry](https://plugins.traefik.io/plugins/62e97498e2bf06d4675b9443/real-ip-from-cloudflare-proxy-tunnel)
 
-
-# Real IP from Cloudflare Proxy/Tunnel
-
-[![Code Coverage](https://codecov.io/gh/BetterCorp/cloudflarewarp/branch/master/graph/badge.svg?token=QFGZS5QJSG)](https://codecov.io/gh/BetterCorp/cloudflarewarp)
-[![Code Analysis](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/codeql-analysis.yml)
-[![Codacy Security Scan](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/codacy-analysis.yml/badge.svg)](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/codacy-analysis.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/BetterCorp/cloudflarewarp)](https://goreportcard.com/report/github.com/BetterCorp/cloudflarewarp)
-[![Build and Test Source](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/buildAndTest.yml/badge.svg)](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/buildAndTest.yml)
-[![Integration Test](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/prodTest.yml/badge.svg)](https://github.com/BetterCorp/cloudflarewarp/actions/workflows/prodTest.yml)
-
-If Traefik is behind a Cloudflare Proxy/Tunnel, it won't be able to get the real IP from the external client as well as other information.
-
-This plugin solves this issue by overwriting the X-Real-IP and X-Forwarded-For with an IP from the CF-Connecting-IP header.  
-The real IP will be the Cf-Connecting-IP if request is come from cloudflare ( truest ip in configuration file).  
-The plugin also writes the CF-Visitor scheme to the X-Forwarded-Proto. (This fixes an infinite redirect issue for wordpress when using CF[443]->PROXY/TUNNEL->Traefik[80]->WP[80])
-
-## Configuration
-
-### Configuration documentation
-
-Supported configurations per body
-
-| Setting        | Allowed values | Required | Description                                         |
-| :------------- | :------------- | :------- | :-------------------------------------------------- |
-| trustip        | []string       | No       | IP or IP range to trust                             |
-| disableDefault | bool           | Yes      | Disable the built in list of CloudFlare IPs/Servers |
-
-### Notes re CloudFlare
-
-One thing included in this plugin is we bundle the CloudFlare server IPs with it, so you do not have to define them manually.  
-However on the flip-side, if you want to, you can just disable them by setting `disableDefault` to `true`.
-
-If you do not define `trustip` and `disableDefault`, it doesn't seem to load the plugin, so just set `disableDefault` to `false` and you are able to use the default IP list.
-
-### Enable the plugin
+Add the local plugin to Traefik's static configuration and restart Traefik. This example uses the file provider to load the middleware and router.
 
 ```yaml
+entryPoints:
+  web:
+    address: ":80"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+
 experimental:
-  plugins:
+  localPlugins:
     cloudflarewarp:
       moduleName: github.com/BetterCorp/cloudflarewarp
-      version: v1.4.0
 ```
 
-### Plugin configuration
+In `/etc/traefik/dynamic.yml`, attach the middleware to the router. Replace `http://whoami:80` with the URL of a backend reachable from Traefik.
 
 ```yaml
 http:
@@ -61,39 +34,51 @@ http:
       plugin:
         cloudflarewarp:
           disableDefault: false
-          trustip: # Trust IPS not required if disableDefault is false - we will allocate Cloud Flare IPs automatically
-            - "2400:cb00::/32"
 
   routers:
-    my-router:
+    whoami:
       rule: Path(`/whoami`)
-      service: service-whoami
-      entryPoints:
-        - http
-      middlewares:
-        - cloudflarewarp
+      entryPoints: [web]
+      middlewares: [cloudflarewarp]
+      service: whoami
 
   services:
-    service-whoami:
+    whoami:
       loadBalancer:
         servers:
-          - url: http://127.0.0.1:5000
+          - url: http://whoami:80
 ```
 
-# Testing
+## Configure proxy trust
 
-[https://github.com/BetterCorp/cloudflarewarp/tree/master/test](https://github.com/BetterCorp/cloudflarewarp/tree/master/test)
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `trustip` | Empty | Additional CIDR ranges for the proxy peers that connect directly to Traefik. Use `/32` for a single IPv4 address and `/128` for a single IPv6 address. |
+| `disableDefault` | `false` | Set to `true` to disable the bundled Cloudflare edge ranges and use only `trustip`. |
 
-We have written the following tests in this repo:
+For a Cloudflare-proxied public origin, keep `disableDefault: false` to include the bundled ranges. Restrict origin access to the intended Cloudflare traffic. [Bundled CIDRs](ips/ips.go) · [Cloudflare origin protection](https://developers.cloudflare.com/fundamentals/security/protect-your-origin-server/)
 
-- golang linting
-- yaegi tests (validate configuration matches what Traefik expects)
-- General GO code coverage
-- Virtual implementation tests (spin up traefik with yml/toml tests to make sure the plugin actually works)
-- Live implementation tests (spin up traefik with the plugin definition as it would be for you, and run the same tests again)
+For Cloudflare Tunnel, configure the address Traefik actually sees for the `cloudflared` connector. For example, if the connector's fixed address is `172.20.0.10`, use the following middleware options and restrict the origin listener to the connector.
 
-These tests allow us to make sure the plugin is always functional with Traefik and Traefik version updates.
+```yaml
+disableDefault: true
+trustip:
+  - "172.20.0.10/32"
+```
 
-# Standing up the crowdsec bouncer plugin in traefik
+Keep Traefik's `forwardedHeaders.insecure` disabled. If the entry point already uses `forwardedHeaders.trustedIPs`, limit it to the immediate proxies you operate or trust. Treat `X-Is-Trusted` as diagnostic metadata and apply authentication separately. [Traefik entry point configuration](https://doc.traefik.io/traefik/reference/install-configuration/entrypoints/)
 
-See the following blog post for a walkthrough on how to stand up the crowdsec bouncer plugin in traefik: [https://bpto.li/H0JY11Zb](https://bpto.li/H0JY11Zb)
+## Development checks
+
+CI uses Go 1.27.4 and golangci-lint 2.15.0. Run these checks from the repository root. The race detector requires a compatible C compiler.
+
+```bash
+go test -race ./...
+golangci-lint run
+go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+bash test/test.sh
+```
+
+The integration test requires Docker with the Compose plugin. It starts pinned Traefik 3.8.0 and whoami 1.12.0 containers, loads the checkout as a local plugin, and checks trusted IPv4 and IPv6 forwarding and untrusted peers with both YAML and TOML. It removes its containers and network on exit.
+
+GitHub Actions runs the same suite for pull requests, branch pushes, and version tags. Coverage is available in the `go-coverage` workflow artifact. The tag run verifies the tagged checkout using the local plugin loader.

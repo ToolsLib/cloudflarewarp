@@ -1,83 +1,77 @@
-#!/bin/sh
+#!/usr/bin/env bash
+set -euo pipefail
 
-TEST_IP="187.2.2.1"
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+project="cloudflarewarp-test-$$"
 
-rm -rf ./logs-success
-rm -rf ./logs-success-toml
-rm -rf ./logs-success-yml
-rm -rf ./logs-fail
-rm -rf ./logs-fail-toml
-rm -rf ./logs-fail-yml
-rm -rf ./logs-invalid
-rm -rf ./logs-invalid-toml
-rm -rf ./logs-invalid-yml
+compose() {
+  docker compose --project-name "$project" --file compose.yml "$@"
+}
 
-if [ "${1}" = "stack" ]; then
-  docker swarm init
-  sleep 5s
-fi
+cleanup() {
+  local status=$?
+  if ((status != 0)); then
+    compose logs --no-color >&2 || true
+  fi
+  compose down --timeout 5 || return 1
+  return "$status"
+}
 
-docker pull traefik/whoami:latest
-docker pull traefik:latest
+request() {
+  local route=$1 client_ip=$2
+  compose exec -T traefik wget -qO- -T 3 \
+    --header "CF-Connecting-IP: $client_ip" \
+    --header 'CF-Visitor: {"scheme":"https"}' \
+    "http://127.0.0.1:8000/$route"
+}
 
-sleep 1s
+require_header() {
+  local response=$1 expected=$2
+  if ! grep -Fqx -- "$expected" <<< "$response"; then
+    printf 'Expected header %s\n%s\n' "$expected" "$response" >&2
+    return 1
+  fi
+}
 
-bash test-base.sh success toml "${1}" $TEST_IP
+for format in yml toml; do
+  (
+    export TEST_CONFIG_FORMAT="$format"
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    compose up -d
 
-sleep 1s
+    ready=false
+    for ((attempt = 0; attempt < 20; attempt++)); do
+      if request trusted 192.0.2.10 >/dev/null 2>&1; then
+        ready=true
+        break
+      fi
+      sleep 1
+    done
+    if [[ $ready == false ]]; then
+      printf 'Traefik did not serve the %s fixture\n' "$format" >&2
+      exit 1
+    fi
 
-mv ./logs ./logs-success-toml
-mv ./tempconfig ./logs-success-toml/config
+    for client_ip in 192.0.2.10 2001:db8::10; do
+      response=$(request trusted "$client_ip")
+      require_header "$response" 'X-Is-Trusted: yes'
+      require_header "$response" "X-Real-Ip: $client_ip"
+      require_header "$response" 'X-Forwarded-Proto: https'
+      forwarded_for=$(sed -n 's/^X-Forwarded-For: //p' <<< "$response")
+      if [[ ${forwarded_for%%,*} != "$client_ip" ]]; then
+        printf 'Expected X-Forwarded-For to start with %s\n%s\n' "$client_ip" "$response" >&2
+        exit 1
+      fi
+    done
 
-sleep 1s
+    for route in untrusted defaults; do
+      response=$(request "$route" 192.0.2.10)
+      require_header "$response" 'X-Is-Trusted: no'
+      require_header "$response" 'X-Real-Ip: 127.0.0.1'
+    done
 
-bash test-base.sh fail toml "${1}" $TEST_IP
-
-sleep 1s
-
-mv ./logs ./logs-fail-toml
-mv ./tempconfig ./logs-fail-toml/config
-
-sleep 1s
-
-bash test-base.sh invalid toml "${1}" "1522.20.2"
-
-sleep 1s
-
-mv ./logs ./logs-invalid-toml
-mv ./tempconfig ./logs-invalid-toml/config
-
-sleep 1s
-
-bash ./test-verify.sh toml $TEST_IP
-
-sleep 1s
-
-bash test-base.sh success yml "${1}" $TEST_IP
-
-sleep 1s
-
-mv ./logs ./logs-success-yml
-mv ./tempconfig ./logs-success-yml/config
-
-sleep 1s
-
-bash test-base.sh fail yml "${1}" $TEST_IP
-
-sleep 1s
-
-mv ./logs ./logs-fail-yml
-mv ./tempconfig ./logs-fail-yml/config
-
-sleep 1s
-
-bash test-base.sh invalid yml "${1}" "1522.20.2"
-
-sleep 1s
-
-mv ./logs ./logs-invalid-yml
-mv ./tempconfig ./logs-invalid-yml/config
-
-sleep 1s
-
-bash ./test-verify.sh yml $TEST_IP
+    printf 'Traefik plugin checks passed for %s\n' "$format"
+  )
+done

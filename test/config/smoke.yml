@@ -1,0 +1,38 @@
+http:
+  routers:
+    trusted:
+      rule: Path(`/trusted`)
+      entryPoints: [web]
+      middlewares: [trust-loopback]
+      service: whoami
+    untrusted:
+      rule: Path(`/untrusted`)
+      entryPoints: [web]
+      middlewares: [trust-none]
+      service: whoami
+    defaults:
+      rule: Path(`/defaults`)
+      entryPoints: [web]
+      middlewares: [trust-cloudflare]
+      service: whoami
+
+  middlewares:
+    trust-loopback:
+      plugin:
+        cloudflarewarp:
+          trustip: [127.0.0.1/32]
+          disableDefault: true
+    trust-none:
+      plugin:
+        cloudflarewarp:
+          disableDefault: true
+    trust-cloudflare:
+      plugin:
+        cloudflarewarp:
+          disableDefault: false
+
+  services:
+    whoami:
+      loadBalancer:
+        servers:
+          - url: http://whoami:80

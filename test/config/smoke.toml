@@ -1,0 +1,30 @@
+[http.routers.trusted]
+  rule = "Path(`/trusted`)"
+  entryPoints = ["web"]
+  middlewares = ["trust-loopback"]
+  service = "whoami"
+
+[http.routers.untrusted]
+  rule = "Path(`/untrusted`)"
+  entryPoints = ["web"]
+  middlewares = ["trust-none"]
+  service = "whoami"
+
+[http.routers.defaults]
+  rule = "Path(`/defaults`)"
+  entryPoints = ["web"]
+  middlewares = ["trust-cloudflare"]
+  service = "whoami"
+
+[http.middlewares.trust-loopback.plugin.cloudflarewarp]
+  trustip = ["127.0.0.1/32"]
+  disableDefault = true
+
+[http.middlewares.trust-none.plugin.cloudflarewarp]
+  disableDefault = true
+
+[http.middlewares.trust-cloudflare.plugin.cloudflarewarp]
+  disableDefault = false
+
+[[http.services.whoami.loadBalancer.servers]]
+  url = "http://whoami:80"
