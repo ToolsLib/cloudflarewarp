@@ -99,33 +99,50 @@ func (r *RealIPOverWriter) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		http.Error(rw, "Unknown source", http.StatusUnprocessableEntity)
 		return
 	}
-	if req.Header.Get(cfConnectingIP) == "" && trustResult.trusted {
-		req.Header.Set(xCfTrusted, "yes")
-		r.next.ServeHTTP(rw, req)
-		return
-	}
-	if trustResult.trusted {
-		if req.Header.Get(cfVisitor) != "" {
-			var cfVisitorValue CFVisitorHeader
-			if err := json.Unmarshal([]byte(req.Header.Get(cfVisitor)), &cfVisitorValue); err != nil {
-				req.Header.Set(xCfTrusted, "danger")
-				req.Header.Del(cfVisitor)
-				req.Header.Del(cfConnectingIP)
-				r.next.ServeHTTP(rw, req)
+	rewriteClientIP(req.Header, trustResult)
+	rewriteScheme(req.Header, trustResult.trusted)
+	r.next.ServeHTTP(rw, req)
+}
+
+func rewriteClientIP(headers http.Header, peer *TrustResult) {
+	status := "no"
+	if peer.trusted {
+		values := headers.Values(cfConnectingIP)
+		if len(values) == 1 {
+			if ip := net.ParseIP(values[0]); ip != nil {
+				clientIP := ip.String()
+				headers.Set(xRealIP, clientIP)
+				headers.Set(xForwardFor, clientIP)
+				headers.Set(xCfTrusted, "yes")
 				return
 			}
-			req.Header.Set(xForwardProto, cfVisitorValue.Scheme)
 		}
-		req.Header.Set(xCfTrusted, "yes")
-		req.Header.Set(xForwardFor, req.Header.Get(cfConnectingIP))
-		req.Header.Set(xRealIP, req.Header.Get(cfConnectingIP))
-	} else {
-		req.Header.Set(xCfTrusted, "no")
-		req.Header.Set(xRealIP, trustResult.directIP)
-		req.Header.Del(cfVisitor)
-		req.Header.Del(cfConnectingIP)
+		if len(values) > 0 {
+			status = "danger"
+		}
 	}
-	r.next.ServeHTTP(rw, req)
+
+	headers.Set(xCfTrusted, status)
+	headers.Set(xRealIP, peer.directIP)
+	headers.Del(xForwardFor)
+	headers.Del(cfConnectingIP)
+}
+
+func rewriteScheme(headers http.Header, trusted bool) {
+	values := headers.Values(cfVisitor)
+	if trusted && len(values) == 1 {
+		var visitor CFVisitorHeader
+		if json.Unmarshal([]byte(values[0]), &visitor) == nil {
+			switch visitor.Scheme {
+			case "http", "https":
+				headers.Set(xForwardProto, visitor.Scheme)
+				return
+			}
+		}
+	}
+
+	// Keep the scheme established by Traefik when Cloudflare metadata is unusable.
+	headers.Del(cfVisitor)
 }
 
 func (r *RealIPOverWriter) trust(s string) *TrustResult {

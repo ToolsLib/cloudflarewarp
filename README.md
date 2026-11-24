@@ -2,7 +2,7 @@
 
 This is the ToolsLib fork of BetterCorp’s archived Traefik plugin. [Upstream repository](https://github.com/BetterCorp/cloudflarewarp)
 
-For requests from a trusted proxy, the middleware uses `CF-Connecting-IP` to set `X-Real-IP` and `X-Forwarded-For`, and uses the scheme in `CF-Visitor` to set `X-Forwarded-Proto` when present. Traefik can append the immediate peer to `X-Forwarded-For` when it sends the request to the backend. Components that read `RemoteAddr` still see the immediate peer.
+This middleware restores the visitor IP and scheme from Cloudflare headers supplied by a trusted proxy. Components that read `RemoteAddr` still see the immediate peer.
 
 ## Install from this checkout
 
@@ -68,6 +68,12 @@ trustip:
 
 Keep Traefik's `forwardedHeaders.insecure` disabled. If the entry point already uses `forwardedHeaders.trustedIPs`, limit it to the immediate proxies you operate or trust. Treat `X-Is-Trusted` as diagnostic metadata and apply authentication separately. [Traefik entry point configuration](https://doc.traefik.io/traefik/reference/install-configuration/entrypoints/)
 
+### Header validation and fallback
+
+A trusted peer can supply one `CF-Connecting-IP` value containing a single IPv4 or IPv6 address. The middleware writes the canonical address to `X-Real-IP` and `X-Forwarded-For` and sets `X-Is-Trusted: yes`. With an untrusted peer or missing client IP, it sets `X-Is-Trusted: no`. An invalid or duplicate client IP from a trusted peer gets `X-Is-Trusted: danger`. In each fallback case, the request continues with the peer IP in `X-Real-IP`, the inherited `X-Forwarded-For` cleared, and any rejected `CF-Connecting-IP` removed. Traefik can append the peer to `X-Forwarded-For` when it proxies to the backend.
+
+The scheme check runs independently. A single `CF-Visitor` header from a trusted peer can set `X-Forwarded-Proto` to `http` or `https`. Otherwise the middleware removes any rejected `CF-Visitor` and keeps the forwarding scheme established by the Traefik entry point.
+
 ## Development checks
 
 CI uses Go 1.27.4 and golangci-lint 2.15.0. Run these checks from the repository root. The race detector requires a compatible C compiler.
@@ -79,6 +85,6 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 bash test/test.sh
 ```
 
-The integration test requires Docker with the Compose plugin. It starts pinned Traefik 3.8.0 and whoami 1.12.0 containers, loads the checkout as a local plugin, and checks trusted IPv4 and IPv6 forwarding and untrusted peers with both YAML and TOML. It removes its containers and network on exit.
+The integration test requires Docker with the Compose plugin. It starts pinned Traefik 3.8.0 and whoami 1.12.0 containers, loads the checkout as a local plugin, and checks IPv4 and IPv6 forwarding and fallback behavior with both YAML and TOML. It removes its containers and network on exit.
 
 GitHub Actions runs the same suite for pull requests, branch pushes, and version tags. Coverage is available in the `go-coverage` workflow artifact. The tag run verifies the tagged checkout using the local plugin loader.

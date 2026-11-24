@@ -18,11 +18,10 @@ cleanup() {
 }
 
 request() {
-  local route=$1 client_ip=$2
+  local route=$1
+  shift
   # Whoami echoes HTTP header lines with CRLF endings.
-  compose exec -T traefik wget -qO- -T 3 \
-    --header "CF-Connecting-IP: $client_ip" \
-    --header 'CF-Visitor: {"scheme":"https"}' \
+  compose exec -T traefik wget -qO- -T 3 "$@" \
     "http://127.0.0.1:8000/$route" | sed $'s/\r$//'
 }
 
@@ -44,7 +43,7 @@ for format in yml toml; do
 
     ready=false
     for ((attempt = 0; attempt < 20; attempt++)); do
-      if request trusted 192.0.2.10 >/dev/null 2>&1; then
+      if request trusted >/dev/null 2>&1; then
         ready=true
         break
       fi
@@ -55,8 +54,9 @@ for format in yml toml; do
       exit 1
     fi
 
+    visitor_header='CF-Visitor: {"scheme":"https"}'
     for client_ip in 192.0.2.10 2001:db8::10; do
-      response=$(request trusted "$client_ip")
+      response=$(request trusted --header "CF-Connecting-IP: $client_ip" --header "$visitor_header")
       require_header "$response" 'X-Is-Trusted: yes'
       require_header "$response" "X-Real-Ip: $client_ip"
       require_header "$response" 'X-Forwarded-Proto: https'
@@ -67,10 +67,23 @@ for format in yml toml; do
       fi
     done
 
+    response=$(request trusted --header "$visitor_header")
+    require_header "$response" 'X-Is-Trusted: no'
+    require_header "$response" 'X-Real-Ip: 127.0.0.1'
+    require_header "$response" 'X-Forwarded-For: 127.0.0.1'
+    require_header "$response" 'X-Forwarded-Proto: https'
+
+    response=$(request trusted --header 'CF-Connecting-IP: 192.0.2.10')
+    require_header "$response" 'X-Is-Trusted: yes'
+    require_header "$response" 'X-Real-Ip: 192.0.2.10'
+    require_header "$response" 'X-Forwarded-Proto: http'
+
     for route in untrusted defaults; do
-      response=$(request "$route" 192.0.2.10)
+      response=$(request "$route" --header 'CF-Connecting-IP: 192.0.2.10' --header "$visitor_header")
       require_header "$response" 'X-Is-Trusted: no'
       require_header "$response" 'X-Real-Ip: 127.0.0.1'
+      require_header "$response" 'X-Forwarded-For: 127.0.0.1'
+      require_header "$response" 'X-Forwarded-Proto: http'
     done
 
     printf 'Traefik plugin checks passed for %s\n' "$format"

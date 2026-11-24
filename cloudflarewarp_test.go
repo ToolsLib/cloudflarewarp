@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -178,6 +179,159 @@ func TestError(t *testing.T) {
 	_, err := plugin.New(ctx, next, cfg, "cloudflarewarp")
 	if err == nil {
 		t.Fatalf("expected error, got none")
+	}
+}
+
+func TestClientIPValidationAndFallback(t *testing.T) {
+	const trustedPeer = "192.0.2.1"
+	tests := []struct {
+		name       string
+		clientIPs  []string
+		wantStatus string
+		wantIP     string
+	}{
+		{
+			name: "valid IPv4", clientIPs: []string{"203.0.113.5"},
+			wantStatus: "yes", wantIP: "203.0.113.5",
+		},
+		{
+			name: "canonical IPv6", clientIPs: []string{"2001:0DB8:0000:0000:0000:0000:0000:0005"},
+			wantStatus: "yes", wantIP: "2001:db8::5",
+		},
+		{
+			name: "missing", wantStatus: "no", wantIP: trustedPeer,
+		},
+		{
+			name: "blank", clientIPs: []string{""},
+			wantStatus: "danger", wantIP: trustedPeer,
+		},
+		{
+			name: "invalid address", clientIPs: []string{"unavailable"},
+			wantStatus: "danger", wantIP: trustedPeer,
+		},
+		{
+			name: "duplicate header values", clientIPs: []string{"203.0.113.5", "203.0.113.5"},
+			wantStatus: "danger", wantIP: trustedPeer,
+		},
+		{
+			name: "address list", clientIPs: []string{"203.0.113.5, 203.0.113.6"},
+			wantStatus: "danger", wantIP: trustedPeer,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			incoming := http.Header{
+				"X-Real-Ip":         {"198.51.100.5"},
+				"X-Forwarded-For":   {"198.51.100.5", "198.51.100.6"},
+				"X-Forwarded-Proto": {"http"},
+				"X-Is-Trusted":      {"no"},
+				"Cf-Visitor":        {`{"scheme":"https"}`},
+			}
+			for _, value := range test.clientIPs {
+				incoming.Add("CF-Connecting-IP", value)
+			}
+			outgoing := downstreamHeaders(t, trustedPeer+":36001", incoming)
+			assertHeaderValues(t, outgoing, "X-Is-Trusted", test.wantStatus)
+			assertHeaderValues(t, outgoing, "X-Real-Ip", test.wantIP)
+			assertHeaderValues(t, outgoing, "X-Forwarded-Proto", "https")
+			if test.wantStatus == "yes" {
+				assertHeaderValues(t, outgoing, "X-Forwarded-For", test.wantIP)
+				assertHeaderValues(t, outgoing, "CF-Connecting-IP", test.clientIPs...)
+			} else {
+				assertHeaderValues(t, outgoing, "X-Forwarded-For")
+				assertHeaderValues(t, outgoing, "CF-Connecting-IP")
+			}
+		})
+	}
+}
+
+func TestVisitorSchemeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		values  []string
+		want    string
+		keepRaw bool
+	}{
+		{name: "valid http", values: []string{`{"scheme":"http"}`}, want: "http", keepRaw: true},
+		{name: "missing", want: "https"},
+		{name: "empty", values: []string{""}, want: "https"},
+		{name: "malformed JSON", values: []string{"{"}, want: "https"},
+		{name: "missing scheme", values: []string{"{}"}, want: "https"},
+		{name: "non-string scheme", values: []string{`{"scheme":true}`}, want: "https"},
+		{name: "unsupported scheme", values: []string{`{"scheme":"ftp"}`}, want: "https"},
+		{name: "duplicate header values", values: []string{`{"scheme":"http"}`, `{"scheme":"http"}`}, want: "https"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const visitorIP = "203.0.113.5"
+			incoming := http.Header{
+				"Cf-Connecting-Ip":  {visitorIP},
+				"X-Forwarded-Proto": {"https"},
+			}
+			for _, value := range test.values {
+				incoming.Add("CF-Visitor", value)
+			}
+			outgoing := downstreamHeaders(t, "192.0.2.1:36001", incoming)
+			assertHeaderValues(t, outgoing, "X-Is-Trusted", "yes")
+			assertHeaderValues(t, outgoing, "X-Real-Ip", visitorIP)
+			assertHeaderValues(t, outgoing, "X-Forwarded-For", visitorIP)
+			assertHeaderValues(t, outgoing, "X-Forwarded-Proto", test.want)
+			if test.keepRaw {
+				assertHeaderValues(t, outgoing, "CF-Visitor", test.values...)
+			} else {
+				assertHeaderValues(t, outgoing, "CF-Visitor")
+			}
+		})
+	}
+}
+
+func TestUntrustedPeerFallback(t *testing.T) {
+	incoming := http.Header{
+		"Cf-Connecting-Ip":  {"203.0.113.5"},
+		"Cf-Visitor":        {`{"scheme":"https"}`},
+		"X-Forwarded-For":   {"198.51.100.5"},
+		"X-Forwarded-Proto": {"http"},
+		"X-Is-Trusted":      {"yes"},
+		"X-Real-Ip":         {"198.51.100.5"},
+	}
+	outgoing := downstreamHeaders(t, "[2001:db8::1]:36001", incoming)
+	assertHeaderValues(t, outgoing, "X-Is-Trusted", "no")
+	assertHeaderValues(t, outgoing, "X-Real-Ip", "2001:db8::1")
+	assertHeaderValues(t, outgoing, "X-Forwarded-For")
+	assertHeaderValues(t, outgoing, "X-Forwarded-Proto", "http")
+	assertHeaderValues(t, outgoing, "CF-Connecting-IP")
+	assertHeaderValues(t, outgoing, "CF-Visitor")
+}
+
+func downstreamHeaders(t *testing.T, remote string, incoming http.Header) http.Header {
+	t.Helper()
+	cfg := plugin.CreateConfig()
+	cfg.DisableDefaultCFIPs = true
+	cfg.TrustIP = []string{"192.0.2.1/32"}
+	var outgoing http.Header
+	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		outgoing = req.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://localhost", nil)
+	req.RemoteAddr = remote
+	req.Header = incoming
+	handler, err := plugin.New(req.Context(), next, cfg, "cloudflarewarp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("next handler did not respond (status %d)", recorder.Code)
+	}
+	return outgoing
+}
+
+func assertHeaderValues(t *testing.T, headers http.Header, key string, want ...string) {
+	t.Helper()
+	if got := headers.Values(key); !slices.Equal(got, want) {
+		t.Errorf("%s = %q, want %q", key, got, want)
 	}
 }
 
