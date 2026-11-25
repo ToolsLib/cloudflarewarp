@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"testing"
 
-	plugin "github.com/BetterCorp/cloudflarewarp"
-	"github.com/BetterCorp/cloudflarewarp/ips"
+	plugin "github.com/ToolsLib/cloudflarewarp"
+	"github.com/ToolsLib/cloudflarewarp/ips"
 )
 
 func TestNew(t *testing.T) {

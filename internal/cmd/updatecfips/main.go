@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BetterCorp/cloudflarewarp/ips"
+	"github.com/ToolsLib/cloudflarewarp/ips"
 )
 
 const (

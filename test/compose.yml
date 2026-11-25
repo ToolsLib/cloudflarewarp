@@ -7,10 +7,10 @@ services:
       - --entrypoints.web.address=:8000
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=false
-      - --experimental.localplugins.cloudflarewarp.modulename=github.com/BetterCorp/cloudflarewarp
+      - --experimental.localplugins.cloudflarewarp.modulename=github.com/ToolsLib/cloudflarewarp
       - --accesslog=true
     volumes:
-      - ../:/plugins-local/src/github.com/BetterCorp/cloudflarewarp:ro
+      - ../:/plugins-local/src/github.com/ToolsLib/cloudflarewarp:ro
       - ./config/smoke.${TEST_CONFIG_FORMAT:?set TEST_CONFIG_FORMAT}:/etc/traefik/dynamic/smoke.${TEST_CONFIG_FORMAT}:ro
 
   whoami:

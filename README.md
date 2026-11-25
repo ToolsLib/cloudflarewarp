@@ -6,7 +6,7 @@ This middleware restores the visitor IP and scheme from Cloudflare headers suppl
 
 ## Install from this checkout
 
-For Traefik 3.8, mount or copy this repository to `plugins-local/src/github.com/BetterCorp/cloudflarewarp` relative to Traefik's working directory. In the official Traefik container, use `/plugins-local/src/github.com/BetterCorp/cloudflarewarp`. The directory follows the Go module name declared by this checkout. The catalog serves BetterCorp's upstream releases. [Traefik catalog entry](https://plugins.traefik.io/plugins/62e97498e2bf06d4675b9443/real-ip-from-cloudflare-proxy-tunnel)
+For Traefik 3.8, mount or copy this repository to `plugins-local/src/github.com/ToolsLib/cloudflarewarp` relative to Traefik's working directory. In the official Traefik container, use `/plugins-local/src/github.com/ToolsLib/cloudflarewarp`. If you installed an earlier checkout in local mode, update both the mount path and `moduleName`.
 
 Add the local plugin to Traefik's static configuration and restart Traefik. This example uses the file provider to load the middleware and router.
 
@@ -22,7 +22,7 @@ providers:
 experimental:
   localPlugins:
     cloudflarewarp:
-      moduleName: github.com/BetterCorp/cloudflarewarp
+      moduleName: github.com/ToolsLib/cloudflarewarp
 ```
 
 In `/etc/traefik/dynamic.yml`, attach the middleware to the router. Replace `http://whoami:80` with the URL of a backend reachable from Traefik.
