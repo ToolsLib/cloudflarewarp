@@ -2,6 +2,7 @@ package cloudflarewarp_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	plugin "github.com/BetterCorp/cloudflarewarp"
+	"github.com/BetterCorp/cloudflarewarp/ips"
 )
 
 func TestNew(t *testing.T) {
@@ -184,6 +186,7 @@ func TestError(t *testing.T) {
 
 func TestClientIPValidationAndFallback(t *testing.T) {
 	const trustedPeer = "192.0.2.1"
+	cfg := &plugin.Config{TrustIP: []string{trustedPeer + "/32"}, DisableDefaultCFIPs: true}
 	tests := []struct {
 		name       string
 		clientIPs  []string
@@ -230,7 +233,7 @@ func TestClientIPValidationAndFallback(t *testing.T) {
 			for _, value := range test.clientIPs {
 				incoming.Add("CF-Connecting-IP", value)
 			}
-			outgoing := downstreamHeaders(t, trustedPeer+":36001", incoming)
+			outgoing := downstreamHeaders(t, cfg, trustedPeer+":36001", incoming)
 			assertHeaderValues(t, outgoing, "X-Is-Trusted", test.wantStatus)
 			assertHeaderValues(t, outgoing, "X-Real-Ip", test.wantIP)
 			assertHeaderValues(t, outgoing, "X-Forwarded-Proto", "https")
@@ -246,6 +249,7 @@ func TestClientIPValidationAndFallback(t *testing.T) {
 }
 
 func TestVisitorSchemeValidation(t *testing.T) {
+	cfg := &plugin.Config{TrustIP: []string{"192.0.2.1/32"}, DisableDefaultCFIPs: true}
 	tests := []struct {
 		name    string
 		values  []string
@@ -271,7 +275,7 @@ func TestVisitorSchemeValidation(t *testing.T) {
 			for _, value := range test.values {
 				incoming.Add("CF-Visitor", value)
 			}
-			outgoing := downstreamHeaders(t, "192.0.2.1:36001", incoming)
+			outgoing := downstreamHeaders(t, cfg, "192.0.2.1:36001", incoming)
 			assertHeaderValues(t, outgoing, "X-Is-Trusted", "yes")
 			assertHeaderValues(t, outgoing, "X-Real-Ip", visitorIP)
 			assertHeaderValues(t, outgoing, "X-Forwarded-For", visitorIP)
@@ -286,6 +290,7 @@ func TestVisitorSchemeValidation(t *testing.T) {
 }
 
 func TestUntrustedPeerFallback(t *testing.T) {
+	cfg := &plugin.Config{TrustIP: []string{"192.0.2.1/32"}, DisableDefaultCFIPs: true}
 	incoming := http.Header{
 		"Cf-Connecting-Ip":  {"203.0.113.5"},
 		"Cf-Visitor":        {`{"scheme":"https"}`},
@@ -294,7 +299,7 @@ func TestUntrustedPeerFallback(t *testing.T) {
 		"X-Is-Trusted":      {"yes"},
 		"X-Real-Ip":         {"198.51.100.5"},
 	}
-	outgoing := downstreamHeaders(t, "[2001:db8::1]:36001", incoming)
+	outgoing := downstreamHeaders(t, cfg, "[2001:db8::1]:36001", incoming)
 	assertHeaderValues(t, outgoing, "X-Is-Trusted", "no")
 	assertHeaderValues(t, outgoing, "X-Real-Ip", "2001:db8::1")
 	assertHeaderValues(t, outgoing, "X-Forwarded-For")
@@ -303,11 +308,51 @@ func TestUntrustedPeerFallback(t *testing.T) {
 	assertHeaderValues(t, outgoing, "CF-Visitor")
 }
 
-func downstreamHeaders(t *testing.T, remote string, incoming http.Header) http.Header {
+func TestBundledCloudflareTrust(t *testing.T) {
+	defaultConfig := plugin.CreateConfig()
+	customConfig := &plugin.Config{
+		DisableDefaultCFIPs: true,
+		TrustIP:             []string{"192.0.2.1/32", "2001:db8::1/128"},
+	}
+	visitor := http.Header{"Cf-Connecting-Ip": {"203.0.113.5"}}
+	var hasIPv4, hasIPv6 bool
+	for _, cidr := range ips.CFIPs() {
+		address, _, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if address.To4() != nil {
+			hasIPv4 = true
+		} else {
+			hasIPv6 = true
+		}
+		t.Run(cidr, func(t *testing.T) {
+			remote := net.JoinHostPort(address.String(), "36001")
+			trusted := downstreamHeaders(t, defaultConfig, remote, visitor.Clone())
+			assertHeaderValues(t, trusted, "X-Is-Trusted", "yes")
+			assertHeaderValues(t, trusted, "X-Real-Ip", "203.0.113.5")
+
+			untrusted := downstreamHeaders(t, customConfig, remote, visitor.Clone())
+			assertHeaderValues(t, untrusted, "X-Is-Trusted", "no")
+			assertHeaderValues(t, untrusted, "X-Real-Ip", address.String())
+		})
+	}
+	if !hasIPv4 || !hasIPv6 {
+		t.Fatal("expected bundled IPv4 and IPv6 ranges")
+	}
+
+	for _, address := range []string{"192.0.2.1", "2001:db8::1"} {
+		t.Run("explicit "+address, func(t *testing.T) {
+			remote := net.JoinHostPort(address, "36001")
+			trusted := downstreamHeaders(t, customConfig, remote, visitor.Clone())
+			assertHeaderValues(t, trusted, "X-Is-Trusted", "yes")
+			assertHeaderValues(t, trusted, "X-Real-Ip", "203.0.113.5")
+		})
+	}
+}
+
+func downstreamHeaders(t *testing.T, cfg *plugin.Config, remote string, incoming http.Header) http.Header {
 	t.Helper()
-	cfg := plugin.CreateConfig()
-	cfg.DisableDefaultCFIPs = true
-	cfg.TrustIP = []string{"192.0.2.1/32"}
 	var outgoing http.Header
 	next := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		outgoing = req.Header.Clone()

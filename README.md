@@ -74,6 +74,16 @@ A trusted peer can supply one `CF-Connecting-IP` value containing a single IPv4 
 
 The scheme check runs independently. A single `CF-Visitor` header from a trusted peer can set `X-Forwarded-Proto` to `http` or `https`. Otherwise the middleware removes any rejected `CF-Visitor` and keeps the forwarding scheme established by the Traefik entry point.
 
+## Update the bundled Cloudflare ranges
+
+Run this from the repository root to compare the snapshot with Cloudflare's live list. A drift report lists added CIDRs with `+` and removed CIDRs with `-`. Drift and download or validation errors exit nonzero with distinct messages. [Cloudflare IP ranges API](https://developers.cloudflare.com/api/resources/ips/methods/list/)
+
+```bash
+go run ./internal/cmd/updatecfips
+```
+
+To apply a validated update, run `go run ./internal/cmd/updatecfips -write` and review the diff in `ips/ips.go` before committing it. GitHub Actions runs the read-only check weekly, and you can run **Cloudflare IP drift** manually before a release. The plugin uses the bundled snapshot at runtime. [Drift workflow](.github/workflows/cloudflare-ip-drift.yml)
+
 ## Development checks
 
 CI uses Go 1.27.4 and golangci-lint 2.15.0. Run these checks from the repository root. The race detector requires a compatible C compiler.
